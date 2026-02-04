@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'core/theme/app_theme.dart';
 import 'presentation/pages/main_shell.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Hive 초기화 (영상 캐시용)
+  await Hive.initFlutter();
 
   // 상태바 스타일
   SystemChrome.setSystemUIOverlayStyle(

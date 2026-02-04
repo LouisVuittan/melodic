@@ -7,31 +7,436 @@ import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_text_styles.dart';
 import '../../core/services/itunes_service.dart';
 import '../../providers/app_providers.dart';
+import '../../providers/search_provider.dart';
 import '../../data/lyrics_data.dart';
 import '../widgets/glass_card.dart';
 import 'lyrics_learning_page.dart';
+import 'search_result_page.dart';
+import 'track_learning_page.dart';
 
-class HomePage extends ConsumerWidget {
+class HomePage extends ConsumerStatefulWidget {
   const HomePage({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final chartAsync = ref.watch(japanTopChartProvider);
-    final screenHeight = MediaQuery.of(context).size.height;
+  ConsumerState<HomePage> createState() => _HomePageState();
+}
 
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: chartAsync.when(
-        loading: () => const Center(
-          child: CircularProgressIndicator(color: AppColors.accent500),
-        ),
-        error: (error, stack) => _buildErrorState(error.toString(), ref),
-        data: (tracks) => _buildContent(context, tracks, screenHeight),
+class _HomePageState extends ConsumerState<HomePage>
+    with SingleTickerProviderStateMixin {
+  final ScrollController _scrollController = ScrollController();
+  bool _isSearchActive = false;  // 검색창 활성화 (배경 어두움 + 입력 가능)
+  bool _isPastHero = false;
+  double _heroHeight = 0;
+
+  late AnimationController _searchAnimController;
+  late Animation<double> _searchWidthAnimation;
+  late Animation<double> _fadeAnimation;
+
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
+
+  // 검색창이 펼쳐져야 하는지 (스크롤 후 OR 활성화 시)
+  bool get _shouldExpand => _isPastHero || _isSearchActive;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController.addListener(_onScroll);
+
+    _searchAnimController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 350),
+    );
+
+    _searchWidthAnimation = CurvedAnimation(
+      parent: _searchAnimController,
+      curve: Curves.easeOutExpo,
+      reverseCurve: Curves.easeInExpo,
+    );
+
+    _fadeAnimation = CurvedAnimation(
+      parent: _searchAnimController,
+      curve: const Interval(0.3, 1.0, curve: Curves.easeOut),
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _heroHeight = MediaQuery.of(context).size.height * 0.38;
+  }
+
+  @override
+  void dispose() {
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
+    _searchAnimController.dispose();
+    _searchController.dispose();
+    _searchFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (_heroHeight == 0) return;
+    final isPast = _scrollController.offset > _heroHeight - 100;
+
+    if (isPast != _isPastHero) {
+      setState(() => _isPastHero = isPast);
+      // 스크롤 시 자동 펼쳐짐 (비활성화 상태)
+      if (isPast && !_isSearchActive) {
+        _searchAnimController.forward();
+      } else if (!isPast && !_isSearchActive) {
+        _searchAnimController.reverse();
+      }
+    }
+  }
+
+  void _activateSearch() {
+    setState(() => _isSearchActive = true);
+    _searchAnimController.forward();
+    Future.delayed(const Duration(milliseconds: 200), () {
+      _searchFocusNode.requestFocus();
+    });
+  }
+
+  void _deactivateSearch() {
+    _searchFocusNode.unfocus();
+    setState(() => _isSearchActive = false);
+    _searchController.clear();
+    ref.read(searchQueryProvider.notifier).state = '';
+
+    // 스크롤 위치에 따라 펼쳐진 상태 유지 or 접기
+    if (!_isPastHero) {
+      _searchAnimController.reverse();
+    }
+  }
+
+  void _onSearchChanged(String value) {
+    ref.read(searchQueryProvider.notifier).state = value;
+    setState(() {}); // X 버튼 표시용
+  }
+
+  void _onSearchSubmit(String value) {
+    if (value.trim().isEmpty) return;
+
+    _deactivateSearch();
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SearchResultPage(query: value.trim()),
       ),
     );
   }
 
-  Widget _buildErrorState(String error, WidgetRef ref) {
+  @override
+  Widget build(BuildContext context) {
+    final chartAsync = ref.watch(japanTopChartProvider);
+    final screenHeight = MediaQuery.of(context).size.height;
+    final statusBarHeight = MediaQuery.of(context).padding.top;
+    final screenWidth = MediaQuery.of(context).size.width;
+
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      body: Stack(
+        children: [
+          // 메인 컨텐츠
+          chartAsync.when(
+            loading: () => const Center(
+              child: CircularProgressIndicator(color: AppColors.accent500),
+            ),
+            error: (error, stack) => _buildErrorState(error.toString()),
+            data: (tracks) => _buildContent(context, tracks, screenHeight),
+          ),
+
+          // 검색 배경 (활성화 시에만 어둡게)
+          if (_isSearchActive)
+            AnimatedBuilder(
+              animation: _fadeAnimation,
+              builder: (context, child) {
+                return GestureDetector(
+                  onTap: _deactivateSearch,
+                  child: Container(
+                    color: Colors.black.withOpacity(0.5 * _fadeAnimation.value),
+                  ),
+                );
+              },
+            ),
+
+          // 검색 버튼 / 검색창 (가운데 정렬)
+          Positioned(
+            top: statusBarHeight + 8,
+            left: 16,
+            right: 16,
+            child: _buildSearchBar(screenWidth),
+          ),
+
+          // 검색 결과 드롭다운
+          if (_isSearchActive)
+            Positioned(
+              top: statusBarHeight + 60,
+              left: 16,
+              right: 16,
+              child: _buildSearchResults(),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSearchBar(double screenWidth) {
+    final query = ref.watch(searchQueryProvider);
+
+    return AnimatedBuilder(
+      animation: _searchAnimController,
+      builder: (context, child) {
+        // 애니메이션 진행에 따른 너비 계산 (44px -> full width)
+        final collapsedWidth = 44.0;
+        final expandedWidth = screenWidth - 32;
+        final currentWidth = collapsedWidth + (_searchWidthAnimation.value * (expandedWidth - collapsedWidth));
+
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(22),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(
+                  sigmaX: _shouldExpand ? 20 : 15,
+                  sigmaY: _shouldExpand ? 20 : 15,
+                ),
+                child: GestureDetector(
+                  onTap: _isSearchActive ? null : _activateSearch,
+                  child: Container(
+                    width: currentWidth,
+                    height: 44,
+                    clipBehavior: Clip.hardEdge,
+                    decoration: BoxDecoration(
+                      color: _isSearchActive
+                          ? AppColors.surface.withOpacity(0.95)
+                          : _isPastHero
+                          ? AppColors.surface.withOpacity(0.9)
+                          : Colors.white.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(22),
+                      border: Border.all(
+                        color: _isSearchActive || _isPastHero
+                            ? AppColors.border
+                            : Colors.white.withOpacity(0.25),
+                        width: 1,
+                      ),
+                      boxShadow: _shouldExpand
+                          ? [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.1),
+                          blurRadius: 10,
+                          offset: const Offset(0, 4),
+                        ),
+                      ]
+                          : null,
+                    ),
+                    child: Row(
+                      children: [
+                        // 검색 아이콘 / 뒤로가기
+                        GestureDetector(
+                          onTap: _isSearchActive ? _deactivateSearch : _activateSearch,
+                          child: SizedBox(
+                            width: 42,
+                            height: 42,
+                            child: Center(
+                              child: Icon(
+                                _isSearchActive ? LucideIcons.arrowLeft : LucideIcons.search,
+                                size: 18,
+                                color: _isSearchActive || _isPastHero
+                                    ? AppColors.textSecondary
+                                    : Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+
+                        // 텍스트 필드 (펼쳐졌을 때만)
+                        if (_searchWidthAnimation.value > 0.3)
+                          Expanded(
+                            child: Opacity(
+                              opacity: ((_searchWidthAnimation.value - 0.3) / 0.7).clamp(0.0, 1.0),
+                              child: AbsorbPointer(
+                                absorbing: !_isSearchActive,
+                                child: TextField(
+                                  controller: _searchController,
+                                  focusNode: _searchFocusNode,
+                                  onChanged: _onSearchChanged,
+                                  onSubmitted: _onSearchSubmit,
+                                  textInputAction: TextInputAction.search,
+                                  cursorColor: AppColors.accent500,
+                                  style: AppTextStyles.bodyMedium.copyWith(
+                                    color: _isSearchActive
+                                        ? AppColors.textPrimary
+                                        : _isPastHero
+                                        ? AppColors.textSecondary
+                                        : Colors.white,
+                                  ),
+                                  decoration: InputDecoration(
+                                    hintText: '노래 또는 아티스트 검색...',
+                                    hintStyle: AppTextStyles.bodySmall.copyWith(
+                                      color: _isSearchActive
+                                          ? AppColors.textTertiary
+                                          : _isPastHero
+                                          ? AppColors.textTertiary
+                                          : Colors.white.withOpacity(0.6),
+                                    ),
+                                    border: InputBorder.none,
+                                    enabledBorder: InputBorder.none,
+                                    focusedBorder: InputBorder.none,
+                                    errorBorder: InputBorder.none,
+                                    disabledBorder: InputBorder.none,
+                                    isDense: true,
+                                    contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+
+                        // X 버튼 (활성화 + 검색어 있을 때만)
+                        if (_isSearchActive && query.isNotEmpty && _searchWidthAnimation.value > 0.5)
+                          Opacity(
+                            opacity: ((_searchWidthAnimation.value - 0.5) / 0.5).clamp(0.0, 1.0),
+                            child: GestureDetector(
+                              onTap: () {
+                                _searchController.clear();
+                                _onSearchChanged('');
+                              },
+                              child: const SizedBox(
+                                width: 42,
+                                height: 42,
+                                child: Center(
+                                  child: Icon(
+                                    LucideIcons.x,
+                                    size: 16,
+                                    color: AppColors.textTertiary,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildSearchResults() {
+    final query = ref.watch(searchQueryProvider);
+    final searchResults = ref.watch(searchResultsProvider);
+
+    if (query.length < 2) return const SizedBox.shrink();
+
+    return AnimatedBuilder(
+      animation: _fadeAnimation,
+      builder: (context, child) {
+        if (_fadeAnimation.value < 0.5) return const SizedBox.shrink();
+
+        return Opacity(
+          opacity: _fadeAnimation.value,
+          child: Container(
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: AppColors.border),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.15),
+                  blurRadius: 20,
+                  offset: const Offset(0, 8),
+                ),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: searchResults.when(
+                loading: () => const Padding(
+                  padding: EdgeInsets.all(20),
+                  child: Center(
+                    child: SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: AppColors.accent500,
+                      ),
+                    ),
+                  ),
+                ),
+                error: (e, _) => Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    '검색 중 오류 발생',
+                    style: AppTextStyles.bodySmall.copyWith(
+                      color: AppColors.textTertiary,
+                    ),
+                  ),
+                ),
+                data: (tracks) {
+                  if (tracks.isEmpty) {
+                    return Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            LucideIcons.searchX,
+                            size: 28,
+                            color: AppColors.textTertiary,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            '일본 노래를 찾을 수 없습니다',
+                            style: AppTextStyles.bodySmall.copyWith(
+                              color: AppColors.textTertiary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }
+
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: tracks.asMap().entries.map((entry) {
+                      final index = entry.key;
+                      final track = entry.value;
+                      final isLast = index == tracks.length - 1;
+
+                      return _SearchResultItem(
+                        track: track,
+                        onTap: () {
+                          _deactivateSearch();
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => TrackLearningPage(track: track),
+                            ),
+                          );
+                        },
+                        showDivider: !isLast,
+                      );
+                    }).toList(),
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildErrorState(String error) {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -62,10 +467,10 @@ class HomePage extends ConsumerWidget {
   Widget _buildContent(BuildContext context, List<iTunesTrack> tracks, double screenHeight) {
     final featuredTrack = tracks.isNotEmpty ? tracks.first : null;
     final heroHeight = screenHeight * 0.38;
-    // 10~12위 곡을 최근 학습으로 사용
     final recentTracks = tracks.length > 12 ? tracks.sublist(9, 12) : tracks.take(3).toList();
 
     return SingleChildScrollView(
+      controller: _scrollController,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -88,6 +493,105 @@ class HomePage extends ConsumerWidget {
 
           const SizedBox(height: 120),
         ],
+      ),
+    );
+  }
+}
+
+/// 검색 결과 아이템
+class _SearchResultItem extends StatelessWidget {
+  final iTunesTrack track;
+  final VoidCallback onTap;
+  final bool showDivider;
+
+  const _SearchResultItem({
+    required this.track,
+    required this.onTap,
+    this.showDivider = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(
+                children: [
+                  // 앨범 아트
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: CachedNetworkImage(
+                      imageUrl: track.albumImageUrl ?? '',
+                      width: 44,
+                      height: 44,
+                      fit: BoxFit.cover,
+                      placeholder: (_, __) => Container(
+                        width: 44,
+                        height: 44,
+                        color: AppColors.surfaceLight,
+                        child: const Icon(
+                          LucideIcons.music2,
+                          size: 18,
+                          color: AppColors.textTertiary,
+                        ),
+                      ),
+                      errorWidget: (_, __, ___) => Container(
+                        width: 44,
+                        height: 44,
+                        color: AppColors.surfaceLight,
+                        child: const Icon(
+                          LucideIcons.music2,
+                          size: 18,
+                          color: AppColors.textTertiary,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+
+                  // 노래 정보
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          track.name,
+                          style: AppTextStyles.bodyMedium.copyWith(
+                            color: AppColors.textPrimary,
+                            fontWeight: FontWeight.w600,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        Text(
+                          track.artistName,
+                          style: AppTextStyles.labelSmall.copyWith(
+                            color: AppColors.textTertiary,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            if (showDivider)
+              Divider(
+                height: 1,
+                thickness: 1,
+                indent: 68,
+                color: AppColors.border.withOpacity(0.5),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -177,8 +681,8 @@ class _HeroSection extends StatelessWidget {
                         onTap: () {
                           Navigator.of(context).push(
                             MaterialPageRoute(
-                              builder: (_) => const LyricsLearningPage(
-                                songData: tutorialSongData,
+                              builder: (_) => TrackLearningPage(
+                                track: track!,
                               ),
                             ),
                           );
@@ -226,19 +730,6 @@ class _HeroSection extends StatelessWidget {
                   ],
                 ),
               ],
-            ),
-          ),
-
-          // 상단 검색 버튼
-          Positioned(
-            top: MediaQuery.of(context).padding.top + 8,
-            right: 16,
-            child: GlassCard(
-              padding: const EdgeInsets.all(10),
-              borderRadius: 12,
-              blur: 15,
-              onTap: () {},
-              child: const Icon(LucideIcons.search, color: Colors.white, size: 18),
             ),
           ),
         ],
@@ -318,7 +809,14 @@ class _TrendySongCard extends StatelessWidget {
       width: 160,
       margin: const EdgeInsets.only(right: 14),
       child: AnimatedPressable(
-        onTap: () {},
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => TrackLearningPage(track: track),
+            ),
+          );
+        },
         child: Stack(
           children: [
             // 메인 카드
@@ -351,9 +849,9 @@ class _TrendySongCard extends StatelessWidget {
 
                     // 하단 그라데이션
                     Positioned(
-                      bottom: 0,
                       left: 0,
                       right: 0,
+                      bottom: 0,
                       height: 100,
                       child: Container(
                         decoration: BoxDecoration(
@@ -369,25 +867,19 @@ class _TrendySongCard extends StatelessWidget {
                       ),
                     ),
 
-                    // 하단 정보
+                    // 노래 정보
                     Positioned(
-                      bottom: 12,
                       left: 12,
                       right: 12,
+                      bottom: 12,
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             track.name,
-                            style: AppTextStyles.titleSmall.copyWith(
+                            style: AppTextStyles.labelMedium.copyWith(
                               color: Colors.white,
                               fontWeight: FontWeight.w700,
-                              shadows: [
-                                Shadow(
-                                  color: Colors.black.withOpacity(0.5),
-                                  blurRadius: 4,
-                                ),
-                              ],
                             ),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
@@ -395,8 +887,8 @@ class _TrendySongCard extends StatelessWidget {
                           const SizedBox(height: 2),
                           Text(
                             track.artistName,
-                            style: AppTextStyles.bodySmall.copyWith(
-                              color: Colors.white.withOpacity(0.8),
+                            style: AppTextStyles.labelSmall.copyWith(
+                              color: Colors.white70,
                             ),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
@@ -404,67 +896,40 @@ class _TrendySongCard extends StatelessWidget {
                         ],
                       ),
                     ),
-
-                    // 재생 버튼 오버레이
-                    Positioned(
-                      top: 12,
-                      right: 12,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(10),
-                        child: BackdropFilter(
-                          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                          child: Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.2),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: const Icon(
-                              LucideIcons.play,
-                              color: Colors.white,
-                              size: 14,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
                   ],
                 ),
               ),
             ),
 
-            // 순위 배지 (Top 3만)
+            // 순위 뱃지 (Top 3)
             if (isTop3)
               Positioned(
-                top: -4,
-                left: -4,
+                top: 8,
+                left: 8,
                 child: Container(
-                  width: 32,
-                  height: 32,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
                       colors: index == 0
                           ? [const Color(0xFFFFD700), const Color(0xFFFFA500)]
                           : index == 1
-                          ? [const Color(0xFFC0C0C0), const Color(0xFF808080)]
-                          : [const Color(0xFFCD7F32), const Color(0xFF8B4513)],
+                          ? [const Color(0xFFC0C0C0), const Color(0xFF909090)]
+                          : [const Color(0xFFCD7F32), const Color(0xFFA0522D)],
                     ),
-                    shape: BoxShape.circle,
+                    borderRadius: BorderRadius.circular(10),
                     boxShadow: [
                       BoxShadow(
                         color: Colors.black.withOpacity(0.3),
-                        blurRadius: 6,
+                        blurRadius: 4,
                         offset: const Offset(0, 2),
                       ),
                     ],
                   ),
-                  child: Center(
-                    child: Text(
-                      '${index + 1}',
-                      style: AppTextStyles.labelMedium.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w800,
-                      ),
+                  child: Text(
+                    '#${index + 1}',
+                    style: AppTextStyles.labelSmall.copyWith(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w800,
                     ),
                   ),
                 ),
@@ -476,7 +941,7 @@ class _TrendySongCard extends StatelessWidget {
   }
 }
 
-/// 최근 학습 리스트 - 트렌디 버전
+/// 최근 학습 리스트
 class _RecentLearningList extends StatelessWidget {
   final List<iTunesTrack> tracks;
 
@@ -488,7 +953,7 @@ class _RecentLearningList extends StatelessWidget {
       return Padding(
         padding: const EdgeInsets.symmetric(horizontal: 20),
         child: Container(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(32),
           decoration: BoxDecoration(
             color: AppColors.surface,
             borderRadius: BorderRadius.circular(16),
@@ -536,7 +1001,14 @@ class _TrendyLearningCard extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       child: AnimatedPressable(
-        onTap: () {},
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => TrackLearningPage(track: track),
+            ),
+          );
+        },
         child: Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
@@ -646,7 +1118,7 @@ class _TrendyLearningCard extends StatelessWidget {
                       ),
 
                       // 진행률 원형
-                      Container(
+                      SizedBox(
                         width: 48,
                         height: 48,
                         child: Stack(
@@ -704,6 +1176,63 @@ class _TrendyLearningCard extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// 터치 피드백 위젯
+class AnimatedPressable extends StatefulWidget {
+  final Widget child;
+  final VoidCallback? onTap;
+  final double scaleFactor;
+
+  const AnimatedPressable({
+    super.key,
+    required this.child,
+    this.onTap,
+    this.scaleFactor = 0.97,
+  });
+
+  @override
+  State<AnimatedPressable> createState() => _AnimatedPressableState();
+}
+
+class _AnimatedPressableState extends State<AnimatedPressable>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _scaleAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 100),
+    );
+    _scaleAnimation = Tween<double>(begin: 1.0, end: widget.scaleFactor).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTapDown: (_) => _controller.forward(),
+      onTapUp: (_) {
+        _controller.reverse();
+        widget.onTap?.call();
+      },
+      onTapCancel: () => _controller.reverse(),
+      child: ScaleTransition(
+        scale: _scaleAnimation,
+        child: widget.child,
       ),
     );
   }
