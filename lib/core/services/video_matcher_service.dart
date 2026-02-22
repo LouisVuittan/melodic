@@ -4,7 +4,7 @@ import 'video_cache_service.dart';
 import 'itunes_service.dart';
 
 /// 영상 매칭 서비스
-/// 캐시 확인 → 없으면 YouTube 검색 → 캐시 저장
+/// YouTube + Gemini 하이브리드로 정확한 공식 영상 찾기
 class VideoMatcherService {
   final YouTubeService _youtubeService;
   final VideoCacheService _cacheService;
@@ -21,7 +21,6 @@ class VideoMatcherService {
   }
 
   /// 트랙에 맞는 YouTube 영상 찾기
-  /// 캐시 히트 시 빠르게 반환, 없으면 API 검색
   Future<VideoMatchResult> findVideoForTrack(iTunesTrack track) async {
     final stopwatch = Stopwatch()..start();
 
@@ -39,16 +38,16 @@ class VideoMatcherService {
         durationMs: cached.durationMs,
         matchScore: cached.matchScore,
         fromCache: true,
+        videoType: 'cached',
       );
     }
 
-    // 2. YouTube 검색
+    // 2. YouTube + Gemini로 검색
     debugPrint('[VideoMatcher] 캐시 미스, YouTube 검색 시작...');
 
-    final result = await _youtubeService.findBestMatch(
+    final result = await _youtubeService.findOfficialVideo(
       trackName: track.name,
       artistName: track.artistName,
-      trackDurationMs: track.durationMs,
     );
 
     stopwatch.stop();
@@ -60,28 +59,30 @@ class VideoMatcherService {
 
     // 3. 캐시 저장
     final cachedVideo = CachedVideo(
-      videoId: result.video.videoId,
-      title: result.video.title,
-      channelTitle: result.video.channelTitle,
-      thumbnailUrl: result.video.thumbnailUrl,
-      durationMs: result.video.durationMs,
-      matchScore: result.score,
+      videoId: result.videoId,
+      title: result.title,
+      channelTitle: result.channelName,
+      thumbnailUrl: 'https://img.youtube.com/vi/${result.videoId}/maxresdefault.jpg',
+      durationMs: 0,
+      matchScore: result.isMusicVideo ? 100 : 80,
       cachedAt: DateTime.now(),
+      videoType: result.type,
     );
 
     await _cacheService.save(track.id, cachedVideo);
 
     debugPrint('[VideoMatcher] 매칭 완료! (${stopwatch.elapsedMilliseconds}ms)');
-    debugPrint('[VideoMatcher] → ${result.video.title} (${result.score}점)');
+    debugPrint('[VideoMatcher] → ${result.title} (${result.type})');
 
     return VideoMatchResult(
-      videoId: result.video.videoId,
-      title: result.video.title,
-      channelTitle: result.video.channelTitle,
-      thumbnailUrl: result.video.thumbnailUrl,
-      durationMs: result.video.durationMs,
-      matchScore: result.score,
+      videoId: result.videoId,
+      title: result.title,
+      channelTitle: result.channelName,
+      thumbnailUrl: 'https://img.youtube.com/vi/${result.videoId}/maxresdefault.jpg',
+      durationMs: 0,
+      matchScore: result.isMusicVideo ? 100 : 80,
       fromCache: false,
+      videoType: result.type,
     );
   }
 
@@ -102,6 +103,7 @@ class VideoMatchResult {
   final int matchScore;
   final bool fromCache;
   final bool found;
+  final String videoType; // 'mv', 'audio', 'cached', 'fallback', 'unknown'
 
   VideoMatchResult({
     this.videoId,
@@ -111,6 +113,7 @@ class VideoMatchResult {
     this.durationMs = 0,
     this.matchScore = 0,
     this.fromCache = false,
+    this.videoType = 'unknown',
   }) : found = videoId != null;
 
   factory VideoMatchResult.notFound() {
@@ -122,6 +125,12 @@ class VideoMatchResult {
       ? 'https://www.youtube.com/watch?v=$videoId'
       : null;
 
+  /// 뮤직비디오 여부
+  bool get isMusicVideo => videoType == 'mv';
+
+  /// 공식 음원 여부
+  bool get isOfficialAudio => videoType == 'audio';
+
   @override
-  String toString() => 'VideoMatchResult(found: $found, videoId: $videoId, score: $matchScore)';
+  String toString() => 'VideoMatchResult(found: $found, videoId: $videoId, type: $videoType)';
 }

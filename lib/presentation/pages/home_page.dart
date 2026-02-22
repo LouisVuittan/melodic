@@ -6,14 +6,13 @@ import 'dart:ui';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_text_styles.dart';
 import '../../core/services/itunes_service.dart';
-import '../../providers/app_providers.dart';
 import '../../providers/search_provider.dart';
 import '../../data/lyrics_data.dart';
 import '../widgets/glass_card.dart';
 import 'lyrics_learning_page.dart';
 import 'search_result_page.dart';
 import 'track_learning_page.dart';
-
+import '../../providers/app_providers.dart';
 class HomePage extends ConsumerStatefulWidget {
   const HomePage({super.key});
 

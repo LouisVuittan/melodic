@@ -8,7 +8,7 @@ import '../../core/services/itunes_service.dart';
 import '../../providers/app_providers.dart';
 import 'track_learning_page.dart';
 import 'artist_page.dart';
-
+import '../../providers/app_providers.dart';
 /// 검색 결과 Provider
 final searchResultPageProvider = FutureProvider.family<SearchPageResult, String>((ref, query) async {
   if (query.isEmpty) {

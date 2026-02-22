@@ -8,7 +8,7 @@ import '../../core/theme/app_text_styles.dart';
 import '../../core/services/itunes_service.dart';
 import '../../providers/app_providers.dart';
 import 'track_learning_page.dart';
-
+import '../../providers/app_providers.dart'; // artistImageProvider 사용
 /// 아티스트 상세 정보 Provider
 final artistDetailProvider = FutureProvider.family<_ArtistDetailData, int>((ref, artistId) async {
   final service = ref.read(iTunesServiceProvider);

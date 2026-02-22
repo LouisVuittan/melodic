@@ -89,6 +89,7 @@ class CachedVideo {
   final int durationMs;
   final int matchScore;
   final DateTime cachedAt;
+  final String videoType; // 'mv', 'audio', 'fallback'
 
   CachedVideo({
     required this.videoId,
@@ -98,6 +99,7 @@ class CachedVideo {
     required this.durationMs,
     required this.matchScore,
     required this.cachedAt,
+    required this.videoType,
   });
 
   factory CachedVideo.fromMap(Map<String, dynamic> map) {
@@ -109,6 +111,7 @@ class CachedVideo {
       durationMs: map['durationMs'] as int? ?? 0,
       matchScore: map['matchScore'] as int? ?? 0,
       cachedAt: DateTime.tryParse(map['cachedAt'] as String? ?? '') ?? DateTime.now(),
+      videoType: map['videoType'] as String? ?? 'unknown',
     );
   }
 
@@ -121,6 +124,7 @@ class CachedVideo {
       'durationMs': durationMs,
       'matchScore': matchScore,
       'cachedAt': cachedAt.toIso8601String(),
+      'videoType': videoType,
     };
   }
 

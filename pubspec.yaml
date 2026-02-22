@@ -11,17 +11,21 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-
+  google_generative_ai: ^0.4.7
   # 상태 관리
   flutter_riverpod: ^2.4.9
   riverpod_annotation: ^2.3.3
 
   # 네비게이션
   go_router: ^13.0.0
-
+  webview_flutter: ^4.10.0
+#  youtube_player_iframe: ^5.0.0
+  youtube_explode_dart: ^2.2.1
   # 네트워크
   dio: ^5.4.0
-  
+
+  flutter_dotenv: ^5.1.0
+
   # 로컬 저장소
   shared_preferences: ^2.2.2
   hive_flutter: ^1.1.0
@@ -51,6 +55,7 @@ dev_dependencies:
   flutter_lints: ^3.0.1
   build_runner: ^2.4.8
   riverpod_generator: ^2.3.9
+  flutter_launcher_icons: ^0.14.4
 
 flutter:
   uses-material-design: true
@@ -58,6 +63,7 @@ flutter:
   assets:
     - assets/images/
     - assets/fonts/
+    - .env
 
   fonts:
     - family: Pretendard
@@ -70,3 +76,13 @@ flutter:
           weight: 600
         - asset: assets/fonts/Pretendard-Bold.otf
           weight: 700
+
+# 아래 블록은 반드시 가장 왼쪽(들여쓰기 없음)에서 시작해야 합니다.
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/images/logo.png"
+  min_sdk_android: 21
+  remove_alpha_ios: true
+
+

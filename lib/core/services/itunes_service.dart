@@ -194,7 +194,7 @@ class iTunesTrack {
 
   /// RSS 피드 JSON에서 생성 (차트용)
   factory iTunesTrack.fromRssJson(Map<String, dynamic> json, {int? rank}) {
-    // 이미지 URL 추출 (여러 사이즈 중 가장 큰 것)
+    // 이미지 URL 추출
     String? imageUrl;
     String? imageLargeUrl;
 
@@ -204,8 +204,11 @@ class iTunesTrack {
         final lastImage = imagesData.last;
         if (lastImage is Map) {
           imageUrl = lastImage['label']?.toString();
-          // 더 큰 이미지로 변환 (170x170 -> 600x600)
-          imageLargeUrl = imageUrl?.replaceAll('170x170', '600x600');
+
+          // [수정] 정규식을 사용하여 안전하게 해상도 교체 (예: 170x170 -> 600x600)
+          if (imageUrl != null) {
+            imageLargeUrl = imageUrl.replaceAll(RegExp(r'\d+x\d+'), '600x600');
+          }
         }
       }
     } catch (_) {}
@@ -286,7 +289,7 @@ class iTunesTrack {
       albumId: 0, // RSS에는 앨범 ID 없음
       albumName: albumName,
       albumImageUrl: imageUrl,
-      albumImageUrlLarge: imageLargeUrl,
+      albumImageUrlLarge: imageLargeUrl ?? imageUrl, // 실패시 원본 사용
       previewUrl: null, // RSS에는 미리듣기 URL 없음
       durationMs: 0,
       trackViewUrl: trackUrl,
@@ -299,7 +302,12 @@ class iTunesTrack {
   /// 검색 결과 JSON에서 생성
   factory iTunesTrack.fromSearchJson(Map<String, dynamic> json) {
     String? imageUrl = json['artworkUrl100'] as String?;
-    String? imageLargeUrl = imageUrl?.replaceAll('100x100', '600x600');
+    String? imageLargeUrl;
+
+    // [수정] 정규식을 사용하여 안전하게 해상도 교체
+    if (imageUrl != null) {
+      imageLargeUrl = imageUrl.replaceAll(RegExp(r'\d+x\d+'), '600x600');
+    }
 
     return iTunesTrack(
       id: (json['trackId'] ?? 0).toString(),
@@ -309,7 +317,7 @@ class iTunesTrack {
       albumId: json['collectionId'] as int? ?? 0,
       albumName: json['collectionName'] as String? ?? '',
       albumImageUrl: imageUrl,
-      albumImageUrlLarge: imageLargeUrl,
+      albumImageUrlLarge: imageLargeUrl ?? imageUrl, // 실패시 원본 사용
       previewUrl: json['previewUrl'] as String?,
       durationMs: json['trackTimeMillis'] as int? ?? 0,
       trackViewUrl: json['trackViewUrl'] as String?,

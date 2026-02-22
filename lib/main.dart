@@ -4,10 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'core/theme/app_theme.dart';
 import 'presentation/pages/main_shell.dart';
-
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
+  await dotenv.load(fileName: ".env");
   // Hive 초기화 (영상 캐시용)
   await Hive.initFlutter();
 
