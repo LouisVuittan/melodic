@@ -9,25 +9,65 @@ import '../../providers/app_providers.dart';
 import 'track_learning_page.dart';
 import 'artist_page.dart';
 import '../../providers/app_providers.dart';
-/// 검색 결과 Provider
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 final searchResultPageProvider = FutureProvider.family<SearchPageResult, String>((ref, query) async {
   if (query.isEmpty) {
     return SearchPageResult(tracks: [], artists: []);
   }
 
   final service = ref.read(iTunesServiceProvider);
-  final results = await service.searchJapaneseMusic(query: query, limit: 30);
+  final rawResults = await service.searchJapaneseMusic(query: query, limit: 30);
 
-  // 아티스트 중복 제거
+  // 1차 필터링: 일본어가 포함된 곡만 추림 (이전 단계)
+  final japaneseRegex = RegExp(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]');
+  final langFiltered = rawResults.where((track) {
+    final text = '${track.name}${track.artistName}';
+    return japaneseRegex.hasMatch(text);
+  }).toList();
+
+  // 🚨 2차 필터링: 우타넷(Uta-Net)에 가사가 있는 곡만 남기기
+  final validTracks = <iTunesTrack>[];
+
+  // 프록시 서버 주소 (실제 구동 중인 서버 IP/도메인으로 변경하세요)
+  const proxyBaseUrl = 'https://e4e1-211-179-133-167.ngrok-free.app'; // 예: 10.0.2.2:4000 (에뮬레이터)
+
+  // API 과부하 및 로딩 지연을 막기 위해 상위 15개만 검사합니다.
+  final tracksToCheck = langFiltered.take(15).toList();
+
+  // 비동기 병렬 처리로 여러 곡을 동시에 검사 (Future.wait)
+  await Future.wait(tracksToCheck.map((track) async {
+    try {
+      final uri = Uri.parse('$proxyBaseUrl/api/lyrics?artist=${Uri.encodeComponent(track.artistName)}&title=${Uri.encodeComponent(track.name)}');
+
+      // 스크래핑이 너무 오래 걸리면 포기하도록 타임아웃 3초 설정
+      final response = await http.get(uri).timeout(const Duration(seconds: 3));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == true) {
+          validTracks.add(track); // 우타넷에 가사가 있는 곡만 리스트에 추가!
+        }
+      }
+    } catch (e) {
+      // 타임아웃이나 서버 에러 발생 시 해당 곡은 스킵
+      print('Uta-Net 확인 실패 (${track.name}): $e');
+    }
+  }));
+
+  // 비동기 처리 때문에 순서가 섞였을 수 있으므로, 원래 검색 결과 순서대로 재정렬
+  validTracks.sort((a, b) => langFiltered.indexOf(a).compareTo(langFiltered.indexOf(b)));
+
+  // 아티스트 중복 제거 로직
   final artistMap = <int, iTunesTrack>{};
-  for (final track in results) {
+  for (final track in validTracks) {
     if (!artistMap.containsKey(track.artistId)) {
       artistMap[track.artistId] = track;
     }
   }
 
   return SearchPageResult(
-    tracks: results,
+    tracks: validTracks,
     artists: artistMap.values.toList(),
   );
 });

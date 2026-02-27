@@ -31,6 +31,7 @@ class _TrackLearningPageState extends ConsumerState<TrackLearningPage> {
 
   // 자막 관련 상태
   List<LyricCaption>? _captions;
+  CaptionSource? _captionSource;
   int _currentCaptionIndex = -1;
   bool _isRepeatMode = false;
   Timer? _positionTimer;
@@ -81,7 +82,7 @@ class _TrackLearningPageState extends ConsumerState<TrackLearningPage> {
 
   void _startPositionTimer() {
     _positionTimer?.cancel();
-    // 50ms 간격으로 더 빠르게 체크 (기존 200ms)
+    // 50ms 간격으로 더 빠르게 체크
     _positionTimer = Timer.periodic(const Duration(milliseconds: 50), (_) {
       _updateCurrentCaption();
     });
@@ -92,21 +93,35 @@ class _TrackLearningPageState extends ConsumerState<TrackLearningPage> {
 
     final positionMs = (_youtubeController!.value.position.inMilliseconds).toDouble();
 
-    // 구간 반복 모드: 끝나기 300ms 전에 미리 처음으로 이동 (버퍼링 방지)
+    // ==========================================
+    // 1. 구간 반복 모드 방어 로직 (오버랩 체인 방지)
+    // ==========================================
     if (_isRepeatMode && _currentCaptionIndex >= 0) {
       final currentCaption = _captions![_currentCaptionIndex];
       final endMs = currentCaption.startMs + currentCaption.durationMs;
 
-      // 끝나기 300ms 전에 미리 seekTo
+      // 끝나기 300ms 전에 미리 처음으로 이동 (버퍼링 방지)
       if (positionMs >= endMs - 300 && positionMs < endMs + 100) {
         _youtubeController!.seekTo(Duration(milliseconds: currentCaption.startMs));
         return; // 자막 인덱스 변경 방지
       }
+
+      // [핵심 방어선] 구간 반복 중에는 현재 가사의 시간 범위 안에 있다면 절대 인덱스를 바꾸지 않고 '고정(Lock)' 합니다!
+      // 오버랩 구간에 진입해도 다른 가사로 튕기는 것을 완벽하게 막아줍니다.
+      if (positionMs >= currentCaption.startMs - 500 && positionMs <= endMs) {
+        return;
+      }
     }
 
-    // 현재 자막 찾기
+    // ==========================================
+    // 2. 일반 재생 모드 로직 (역순 탐색)
+    // ==========================================
     int newIndex = -1;
-    for (int i = 0; i < _captions!.length; i++) {
+
+    // [핵심 변경] 앞에서부터 찾지 않고 리스트의 '끝'에서부터 거꾸로 찾습니다!
+    // 이렇게 하면 1번 가사와 2번 가사가 겹치는 1.8초 구간에 진입했을 때,
+    // 예전 가사(1번)로 돌아가지 않고 무조건 새로 시작하는 가사(2번)를 우선적으로 잡습니다.
+    for (int i = _captions!.length - 1; i >= 0; i--) {
       final caption = _captions![i];
       if (positionMs >= caption.startMs && positionMs < caption.startMs + caption.durationMs) {
         newIndex = i;
@@ -114,15 +129,13 @@ class _TrackLearningPageState extends ConsumerState<TrackLearningPage> {
       }
     }
 
-    if (newIndex != _currentCaptionIndex) {
+    if (newIndex != -1 && newIndex != _currentCaptionIndex) {
       setState(() {
         _currentCaptionIndex = newIndex;
       });
 
       // 자동 스크롤
-      if (newIndex >= 0) {
-        _scrollToCaption(newIndex);
-      }
+      _scrollToCaption(newIndex);
     }
   }
 
@@ -154,7 +167,7 @@ class _TrackLearningPageState extends ConsumerState<TrackLearningPage> {
     // seekTo 실행
     _youtubeController!.seekTo(Duration(milliseconds: caption.startMs));
 
-    // 재생 중이었으면 계속 재생 (seekTo 후 일시정지 될 수 있어서)
+    // 재생 중이었으면 계속 재생
     if (wasPlaying) {
       _youtubeController!.play();
     }
@@ -164,7 +177,6 @@ class _TrackLearningPageState extends ConsumerState<TrackLearningPage> {
     if (_currentCaptionIndex > 0) {
       _seekToCaption(_currentCaptionIndex - 1);
     } else if (_captions != null && _captions!.isNotEmpty) {
-      // 처음이면 현재 구간 처음으로
       _seekToCaption(0);
     }
   }
@@ -219,31 +231,59 @@ class _TrackLearningPageState extends ConsumerState<TrackLearningPage> {
             onPressed: () => Navigator.pop(context),
             icon: const Icon(LucideIcons.arrowLeft, color: AppColors.textPrimary),
           ),
-          const SizedBox(width: 8),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   widget.track.name,
-                  style: AppTextStyles.titleSmall.copyWith(
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w700,
-                  ),
+                  style: AppTextStyles.titleSmall.copyWith(color: AppColors.textPrimary),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
                 Text(
                   widget.track.artistName,
-                  style: AppTextStyles.bodySmall.copyWith(
-                    color: AppColors.textSecondary,
-                  ),
+                  style: AppTextStyles.bodySmall.copyWith(color: AppColors.textSecondary),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
               ],
             ),
           ),
+          // 자막 소스 표시
+          if (_captionSource != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: _captionSource == CaptionSource.youtube
+                    ? Colors.red.withOpacity(0.2)
+                    : AppColors.accent500.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    _captionSource == CaptionSource.youtube
+                        ? LucideIcons.youtube
+                        : LucideIcons.sparkles,
+                    size: 14,
+                    color: _captionSource == CaptionSource.youtube
+                        ? Colors.red
+                        : AppColors.accent500,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    _captionSource == CaptionSource.youtube ? 'YouTube' : 'AI',
+                    style: AppTextStyles.labelSmall.copyWith(
+                      color: _captionSource == CaptionSource.youtube
+                          ? Colors.red
+                          : AppColors.accent500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );
@@ -255,12 +295,10 @@ class _TrackLearningPageState extends ConsumerState<TrackLearningPage> {
         mainAxisSize: MainAxisSize.min,
         children: [
           const CircularProgressIndicator(color: AppColors.accent500),
-          const SizedBox(height: 24),
+          const SizedBox(height: 16),
           Text(
-            '영상을 찾고 있어요...',
-            style: AppTextStyles.bodyMedium.copyWith(
-              color: AppColors.textSecondary,
-            ),
+            '영상을 찾고 있습니다...',
+            style: AppTextStyles.bodyMedium.copyWith(color: AppColors.textSecondary),
           ),
         ],
       ),
@@ -274,14 +312,18 @@ class _TrackLearningPageState extends ConsumerState<TrackLearningPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(LucideIcons.alertTriangle, size: 48, color: AppColors.error),
+            const Icon(LucideIcons.alertCircle, size: 48, color: AppColors.textTertiary),
             const SizedBox(height: 16),
             Text(
-              '영상을 불러올 수 없습니다',
+              '오류가 발생했습니다',
               style: AppTextStyles.titleMedium.copyWith(color: AppColors.textPrimary),
             ),
             const SizedBox(height: 8),
-            Text(error, style: AppTextStyles.bodySmall.copyWith(color: AppColors.textSecondary)),
+            Text(
+              error,
+              style: AppTextStyles.bodySmall.copyWith(color: AppColors.textSecondary),
+              textAlign: TextAlign.center,
+            ),
             const SizedBox(height: 24),
             ElevatedButton.icon(
               onPressed: () => ref.invalidate(videoMatchProvider(widget.track)),
@@ -318,8 +360,12 @@ class _TrackLearningPageState extends ConsumerState<TrackLearningPage> {
   }
 
   Widget _buildContent(VideoMatchResult result) {
-    // 자막 로드
-    final captionAsync = ref.watch(captionProvider(result.videoId!));
+    // 스마트 자막 로드 (YouTube 자막 없으면 AI 생성)
+    final captionAsync = ref.watch(smartCaptionProvider(SmartCaptionParams(
+      videoId: result.videoId!,
+      artist: widget.track.artistName,
+      title: widget.track.name,
+    )));
 
     return Column(
       children: [
@@ -343,16 +389,24 @@ class _TrackLearningPageState extends ConsumerState<TrackLearningPage> {
         // 자막 영역
         Expanded(
           child: captionAsync.when(
-            loading: () => const Center(
-              child: CircularProgressIndicator(color: AppColors.accent500),
-            ),
+            loading: () => _buildCaptionLoadingState(),
             error: (e, _) => _buildNoCaptionState(),
-            data: (captions) {
-              if (captions == null || captions.isEmpty) {
+            data: (captionResult) {
+              if (captionResult == null || captionResult.captions.isEmpty) {
                 return _buildNoCaptionState();
               }
-              _captions = captions;
-              return _buildCaptionList(captions);
+              _captions = captionResult.captions;
+
+              // 자막 소스 업데이트 (한 번만)
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (_captionSource != captionResult.source) {
+                  setState(() {
+                    _captionSource = captionResult.source;
+                  });
+                }
+              });
+
+              return _buildCaptionList(captionResult.captions);
             },
           ),
         ),
@@ -408,6 +462,28 @@ class _TrackLearningPageState extends ConsumerState<TrackLearningPage> {
     );
   }
 
+  Widget _buildCaptionLoadingState() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const CircularProgressIndicator(color: AppColors.accent500),
+          const SizedBox(height: 16),
+          Text(
+            '자막을 불러오는 중...',
+            style: AppTextStyles.bodyMedium.copyWith(color: AppColors.textSecondary),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'YouTube 자막이 없으면 AI가 생성합니다\n(최대 2-3분 소요)',
+            style: AppTextStyles.bodySmall.copyWith(color: AppColors.textTertiary),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildNoCaptionState() {
     return Center(
       child: Padding(
@@ -418,14 +494,30 @@ class _TrackLearningPageState extends ConsumerState<TrackLearningPage> {
             const Icon(LucideIcons.subtitles, size: 48, color: AppColors.textTertiary),
             const SizedBox(height: 16),
             Text(
-              '자막이 없습니다',
+              '자막을 불러올 수 없습니다',
               style: AppTextStyles.titleMedium.copyWith(color: AppColors.textPrimary),
             ),
             const SizedBox(height: 8),
             Text(
-              '이 영상은 자막을 지원하지 않아\n구간 학습이 불가능합니다.',
+              'YouTube 자막이 없고\n가사 정보도 찾을 수 없습니다.',
               style: AppTextStyles.bodySmall.copyWith(color: AppColors.textSecondary),
               textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              onPressed: () {
+                ref.invalidate(smartCaptionProvider(SmartCaptionParams(
+                  videoId: _currentVideoId!,
+                  artist: widget.track.artistName,
+                  title: widget.track.name,
+                )));
+              },
+              icon: const Icon(LucideIcons.refreshCw, size: 18),
+              label: const Text('다시 시도'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.accent500,
+                foregroundColor: Colors.white,
+              ),
             ),
           ],
         ),
@@ -466,39 +558,28 @@ class _TrackLearningPageState extends ConsumerState<TrackLearningPage> {
                     color: isCurrentCaption
                         ? AppColors.accent500
                         : AppColors.textTertiary.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(4),
+                    borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
                     caption.formattedStart,
                     style: AppTextStyles.labelSmall.copyWith(
-                      color: isCurrentCaption ? Colors.white : AppColors.textSecondary,
-                      fontFamily: 'monospace',
+                      color: isCurrentCaption ? Colors.white : AppColors.textTertiary,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                 ),
                 const SizedBox(width: 12),
-
-                // 자막 텍스트
+                // 가사 텍스트
                 Expanded(
                   child: Text(
                     caption.text,
-                    style: AppTextStyles.bodyMedium.copyWith(
-                      color: isCurrentCaption
-                          ? AppColors.textPrimary
-                          : AppColors.textSecondary,
+                    style: AppTextStyles.bodyLarge.copyWith(
+                      color: isCurrentCaption ? AppColors.textPrimary : AppColors.textSecondary,
                       fontWeight: isCurrentCaption ? FontWeight.w600 : FontWeight.normal,
                       height: 1.5,
                     ),
                   ),
                 ),
-
-                // 현재 재생 중 표시
-                if (isCurrentCaption)
-                  const Icon(
-                    LucideIcons.volume2,
-                    size: 18,
-                    color: AppColors.accent500,
-                  ),
               ],
             ),
           ),

@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:lucide_icons/lucide_icons.dart';
@@ -129,7 +129,7 @@ class _HomePageState extends ConsumerState<HomePage>
 
   @override
   Widget build(BuildContext context) {
-    final chartAsync = ref.watch(japanTopChartProvider);
+    final chartAsync = ref.watch(koreaJPopChartProvider);
     final screenHeight = MediaQuery.of(context).size.height;
     final statusBarHeight = MediaQuery.of(context).padding.top;
     final screenWidth = MediaQuery.of(context).size.width;
@@ -453,7 +453,7 @@ class _HomePageState extends ConsumerState<HomePage>
             Text(error, style: AppTextStyles.bodySmall, textAlign: TextAlign.center),
             const SizedBox(height: 16),
             TextButton.icon(
-              onPressed: () => ref.invalidate(japanTopChartProvider),
+              onPressed: () => ref.invalidate(koreaJPopChartProvider),
               icon: const Icon(LucideIcons.refreshCw, size: 16),
               label: const Text('다시 시도'),
             ),

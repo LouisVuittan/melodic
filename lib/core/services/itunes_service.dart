@@ -8,56 +8,72 @@ class iTunesService {
 
   iTunesService({Dio? dio}) : _dio = dio ?? Dio();
 
+  /// RSS 피드를 파싱하여 트랙 리스트 반환 (공통 로직)
+  List<iTunesTrack> _parseRssFeed(dynamic responseData) {
+    dynamic data = responseData;
+    if (data is String) {
+      data = jsonDecode(data);
+    }
+
+    if (data is! Map<String, dynamic>) {
+      throw iTunesException('잘못된 응답 형식');
+    }
+
+    final feed = data['feed'];
+    if (feed is! Map<String, dynamic>) {
+      throw iTunesException('feed 데이터 없음');
+    }
+
+    final entryData = feed['entry'];
+
+    // entry가 단일 객체일 수도 있고 배열일 수도 있음
+    List<dynamic> entryList;
+    if (entryData is List) {
+      entryList = entryData;
+    } else if (entryData is Map) {
+      entryList = [entryData];
+    } else {
+      entryList = [];
+    }
+
+    final List<iTunesTrack> tracks = [];
+    for (int i = 0; i < entryList.length; i++) {
+      try {
+        final item = entryList[i];
+        if (item is Map<String, dynamic>) {
+          tracks.add(iTunesTrack.fromRssJson(item, rank: i + 1));
+        }
+      } catch (e) {
+        // 개별 트랙 파싱 실패해도 계속 진행
+        continue;
+      }
+    }
+    return tracks;
+  }
+
   /// 일본 Top 100 차트 가져오기
   Future<List<iTunesTrack>> getJapanTopChart({int limit = 50}) async {
     try {
       final response = await _dio.get(
         'https://itunes.apple.com/jp/rss/topsongs/limit=$limit/json',
       );
-
-      // response.data가 String이면 JSON 파싱
-      dynamic data = response.data;
-      if (data is String) {
-        data = jsonDecode(data);
-      }
-
-      if (data is! Map<String, dynamic>) {
-        throw iTunesException('잘못된 응답 형식');
-      }
-
-      final feed = data['feed'];
-      if (feed is! Map<String, dynamic>) {
-        throw iTunesException('feed 데이터 없음');
-      }
-
-      final entryData = feed['entry'];
-
-      // entry가 단일 객체일 수도 있고 배열일 수도 있음
-      List<dynamic> entryList;
-      if (entryData is List) {
-        entryList = entryData;
-      } else if (entryData is Map) {
-        entryList = [entryData];
-      } else {
-        entryList = [];
-      }
-
-      final List<iTunesTrack> tracks = [];
-      for (int i = 0; i < entryList.length; i++) {
-        try {
-          final item = entryList[i];
-          if (item is Map<String, dynamic>) {
-            tracks.add(iTunesTrack.fromRssJson(item, rank: i + 1));
-          }
-        } catch (e) {
-          // 개별 트랙 파싱 실패해도 계속 진행
-          continue;
-        }
-      }
-      return tracks;
+      return _parseRssFeed(response.data);
     } catch (e) {
       if (e is iTunesException) rethrow;
       throw iTunesException('차트를 불러오는데 실패했습니다: $e');
+    }
+  }
+
+  /// 🇰🇷 한국에서 인기있는 J-Pop 차트 가져오기
+  Future<List<iTunesTrack>> getKoreaJPopChart({int limit = 50}) async {
+    try {
+      final response = await _dio.get(
+        'https://itunes.apple.com/kr/rss/topsongs/genre=27/limit=$limit/json',
+      );
+      return _parseRssFeed(response.data);
+    } catch (e) {
+      if (e is iTunesException) rethrow;
+      throw iTunesException('한국 J-Pop 차트를 불러오는데 실패했습니다: $e');
     }
   }
 

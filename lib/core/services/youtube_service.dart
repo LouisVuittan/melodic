@@ -2,8 +2,9 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:convert';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+
 /// 하이브리드 영상 검색 서비스
-/// YouTube API로 조회수 상위 5개 검색 → Gemini가 최적 영상 선택
+/// YouTube API로 검색 + 점수제로 필터링/정렬 → Gemini가 최적 영상 최종 선택
 class YouTubeService {
   final Dio _dio;
 
@@ -30,7 +31,7 @@ class YouTubeService {
     debugPrint('[YouTube] API 키 전환: $_currentYoutubeKeyIndex');
   }
 
-  /// 곡에 맞는 YouTube 영상 찾기 (하이브리드)
+  /// 곡에 맞는 YouTube 영상 찾기 (하이브리드: 점수제 + Gemini)
   Future<YouTubeMatchResult?> findOfficialVideo({
     required String trackName,
     required String artistName,
@@ -39,30 +40,53 @@ class YouTubeService {
     debugPrint('[Hybrid] 검색: $trackName - $artistName');
     debugPrint('[Hybrid] ========================================');
 
-    // Step 1: YouTube API로 조회수 상위 5개 검색
-    final candidates = await _searchYouTubeByViews(trackName, artistName);
+    // Step 1: YouTube API 검색 및 점수제 평가/정렬
+    final candidates = await _searchYouTubeAndScore(trackName, artistName);
 
     if (candidates.isEmpty) {
       debugPrint('[Hybrid] YouTube 검색 결과 없음');
       return null;
     }
 
-    debugPrint('[Hybrid] 후보 ${candidates.length}개 발견');
+    debugPrint('[Hybrid] 점수제 평가 상위 ${candidates.length}개 후보');
     for (int i = 0; i < candidates.length; i++) {
-      debugPrint('[Hybrid] #${i + 1}: ${candidates[i].title} (${_formatViews(candidates[i].viewCount)})');
+      debugPrint('[Hybrid] #${i + 1} [${candidates[i].score}점]: ${candidates[i].title} (${_formatViews(candidates[i].viewCount)})');
     }
 
-    // Step 2: Gemini에게 최적 영상 선택 요청
-    final selected = await _askGeminiToSelect(trackName, artistName, candidates);
+    // ⭐ [속도 개선 1] 하이패스 (Fast Pass) 로직
+    final topCandidate = candidates[0];
+    final secondScore = candidates.length > 1 ? candidates[1].score : 0;
+
+    // 조건 1: 절대 평가 (90점 이상이면 확실한 공식 MV)
+    final isAbsoluteWinner = topCandidate.score >= 90;
+    // 조건 2: 상대 평가 (70점 이상이면서 2등과 30점 이상 차이 나면 독보적 1등)
+    final isRelativeWinner = topCandidate.score >= 70 && (topCandidate.score - secondScore >= 30);
+
+    if (candidates.length == 1 || isAbsoluteWinner || isRelativeWinner) {
+      debugPrint('[Hybrid] ⚡ 하이패스 발동! Gemini 생략하고 1등 바로 선택: ${topCandidate.title}');
+
+      // 제목에 mv, official 등이 있으면 mv, 아니면 audio로 간주
+      final titleLower = topCandidate.title.toLowerCase();
+      final type = (titleLower.contains('mv') || titleLower.contains('official') || titleLower.contains('公式')) ? 'mv' : 'audio';
+
+      return YouTubeMatchResult(
+        videoId: topCandidate.videoId,
+        title: topCandidate.title,
+        channelName: topCandidate.channelTitle,
+        type: type,
+      );
+    }
+
+    // Step 2: 애매할 때만 Gemini에게 최적 영상 선택 요청 (후보군 Top 3로 축소)
+    final top3Candidates = candidates.take(3).toList();
+    final selected = await _askGeminiToSelect(trackName, artistName, top3Candidates);
 
     if (selected == null) {
-      debugPrint('[Hybrid] Gemini 선택 실패, 조회수 1위 반환');
-      // Fallback: 조회수 1위 반환
-      final top = candidates.first;
+      debugPrint('[Hybrid] Gemini 선택 실패, 점수 1위 반환');
       return YouTubeMatchResult(
-        videoId: top.videoId,
-        title: top.title,
-        channelName: top.channelTitle,
+        videoId: topCandidate.videoId,
+        title: topCandidate.title,
+        channelName: topCandidate.channelTitle,
         type: 'fallback',
       );
     }
@@ -70,20 +94,19 @@ class YouTubeService {
     return selected;
   }
 
-  /// YouTube API로 조회수 순 검색
-  Future<List<YouTubeCandidate>> _searchYouTubeByViews(String trackName, String artistName) async {
+  /// YouTube API 검색 후 HTML 로직 기반 점수제로 평가 및 정렬
+  Future<List<YouTubeCandidate>> _searchYouTubeAndScore(String trackName, String artistName) async {
     final query = '$trackName $artistName';
 
     try {
-      // 검색 (조회수 순)
       final searchResponse = await _dio.get(
         '$_youtubeUrl/search',
         queryParameters: {
           'part': 'snippet',
           'q': query,
           'type': 'video',
-          'order': 'viewCount', // 조회수 순!
-          'maxResults': 10, // 여유있게 10개 (필터링 후 5개)
+          'order': 'relevance',
+          'maxResults': 30,
           'key': _currentYoutubeKey,
         },
       );
@@ -100,7 +123,6 @@ class YouTubeService {
 
       if (videoIds.isEmpty) return [];
 
-      // 상세 정보 가져오기 (status 포함해서 embeddable 체크)
       final detailsResponse = await _dio.get(
         '$_youtubeUrl/videos',
         queryParameters: {
@@ -114,7 +136,6 @@ class YouTubeService {
       if (detailsData is String) detailsData = jsonDecode(detailsData);
 
       final detailItems = detailsData['items'] as List<dynamic>? ?? [];
-
       final candidates = <YouTubeCandidate>[];
 
       for (final item in detailItems) {
@@ -123,36 +144,49 @@ class YouTubeService {
         final contentDetails = item['contentDetails'] as Map<String, dynamic>? ?? {};
         final status = item['status'] as Map<String, dynamic>? ?? {};
 
-        // embeddable 체크 - 외부 앱에서 재생 가능한지
         final embeddable = status['embeddable'] as bool? ?? false;
-        if (!embeddable) {
-          debugPrint('[YouTube] 제외 (embed 불가): ${snippet['title']}');
+        if (!embeddable) continue;
+
+        final contentRating = contentDetails['contentRating'] as Map<String, dynamic>? ?? {};
+        final isAgeRestricted = contentRating.containsKey('ytRating') &&
+            contentRating['ytRating'] == 'ytAgeRestricted';
+
+        if (isAgeRestricted) {
+          debugPrint('[YouTube] 컷! ✂️ 제외 (연령 제한/민감한 콘텐츠): ${snippet['title']}');
           continue;
         }
-
         final durationStr = contentDetails['duration']?.toString() ?? '';
         final durationSec = _parseDuration(durationStr);
 
-        // 필터: 1분 이상, 15분 이하
         if (durationSec < 60 || durationSec > 900) continue;
 
         final title = snippet['title']?.toString() ?? '';
         final titleLower = title.toLowerCase();
 
-        // 필터: 리액션, 커버 제외
         if (_isExcluded(titleLower)) continue;
+
+        final channelTitle = snippet['channelTitle']?.toString() ?? '';
+        final viewCount = int.tryParse(statistics['viewCount']?.toString() ?? '0') ?? 0;
+
+        final score = _calculateScore(
+          title: title,
+          channelTitle: channelTitle,
+          viewCount: viewCount,
+          trackName: trackName,
+          artistName: artistName,
+        );
 
         candidates.add(YouTubeCandidate(
           videoId: item['id']?.toString() ?? '',
           title: title,
-          channelTitle: snippet['channelTitle']?.toString() ?? '',
-          viewCount: int.tryParse(statistics['viewCount']?.toString() ?? '0') ?? 0,
+          channelTitle: channelTitle,
+          viewCount: viewCount,
           durationSec: durationSec,
+          score: score,
         ));
-
-        // 상위 5개만
-        if (candidates.length >= 5) break;
       }
+
+      candidates.sort((a, b) => b.score.compareTo(a.score));
 
       return candidates;
 
@@ -169,18 +203,64 @@ class YouTubeService {
     }
   }
 
-  /// 제외 키워드 체크
+  /// HTML 로직 기반 점수 계산기
+  int _calculateScore({
+    required String title,
+    required String channelTitle,
+    required int viewCount,
+    required String trackName,
+    required String artistName,
+  }) {
+    int score = 0;
+    final titleLower = title.toLowerCase();
+    final channelLower = channelTitle.toLowerCase();
+    final trackLower = trackName.toLowerCase();
+    final artistLower = artistName.toLowerCase();
+
+    // 공식 채널
+    if (channelLower.contains('official') || channelLower.contains('vevo') || channelLower.contains('公式')) score += 50;
+    // Topic 채널
+    if (channelLower.contains('topic')) score += 40;
+    // 제목에 official
+    if (titleLower.contains('official') || titleLower.contains('公式')) score += 30;
+    // 제목에 MV
+    if (titleLower.contains('mv') || titleLower.contains('music video') || titleLower.contains('ミュージックビデオ')) score += 25;
+    // 곡명 포함
+    if (titleLower.contains(trackLower) || title.contains(trackName)) score += 20;
+    // 아티스트명 포함
+    if (titleLower.contains(artistLower) || title.contains(artistName) || channelLower.contains(artistLower) || channelTitle.contains(artistName)) score += 15;
+
+    // 조회수 보너스
+    if (viewCount > 100000000) score += 20;
+    else if (viewCount > 10000000) score += 15;
+    else if (viewCount > 1000000) score += 10;
+
+    return score;
+  }
+
   bool _isExcluded(String titleLower) {
     const excludeKeywords = [
-      'reaction', 'react', 'リアクション', '反応', '리액션',
-      'cover', '커버', '歌ってみた', 'カバー',
-      'piano', 'guitar', 'drum', 'acoustic', 'instrumental',
-      '踊ってみた', 'dance practice', 'dance cover',
-      'remix', 'リミックス',
-      'live', 'concert', 'ライブ', '라이브',
-      'tutorial', 'lesson',
-      'shorts', '#shorts',
-      'nightcore', 'slowed', '8d audio',
+      'reaction', 'react', 'reacting', 'リアクション', '反応', '리액션', 'リアクト',
+      'first time', 'first listen', '처음',
+      'cover', 'covered', '커버', '歌ってみた', '불러봤', '노래해봤', 'カバー',
+      'sing', 'sang', 'singing',
+      '踊ってみた', 'dance practice', 'dance cover', '안무', '춤춰봤', 'choreography',
+      'piano', 'guitar', 'drum', 'bass', 'acoustic', 'instrumental',
+      '연주', '피아노', '기타', 'inst', 'karaoke', '노래방',
+      'remix', 'リミックス', '리믹스', 'bootleg',
+      'live', 'concert', 'ライブ', '라이브', '콘서트', 'fancam', '직캠', 'stage',
+      'tutorial', '강의', 'lesson', 'how to',
+      'teaser', 'preview', 'trailer',
+      'short', 'shorts', '#shorts', 'tiktok', 'vertical',
+      'amv', 'mad', 'gmv', 'mmv', 'fmv',
+      'nightcore', 'slowed', 'reverb', '8d audio', 'speed up',
+      'mashup', '매쉬업', 'medley',
+      'parody', '패러디',
+      'unboxing', 'review', '리뷰', 'ranking', '순위',
+      'compilation', '모음', 'best of', 'top 10',
+      'behind', 'making', '메이킹', 'vlog',
+      'fan made', 'fanmade', '팬메이드',
+      'lyrics video', 'lyric video'
     ];
 
     for (final kw in excludeKeywords) {
@@ -189,7 +269,6 @@ class YouTubeService {
     return false;
   }
 
-  /// ISO 8601 duration 파싱 (초 단위)
   int _parseDuration(String duration) {
     if (duration.isEmpty) return 0;
     final regex = RegExp(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?');
@@ -203,7 +282,6 @@ class YouTubeService {
     return hours * 3600 + minutes * 60 + seconds;
   }
 
-  /// 조회수 포맷
   String _formatViews(int views) {
     if (views >= 100000000) return '${(views / 100000000).toStringAsFixed(1)}억';
     if (views >= 10000) return '${(views / 10000).toStringAsFixed(1)}만';
@@ -234,7 +312,9 @@ class YouTubeService {
           ],
           'generationConfig': {
             'temperature': 0.1,
-            'maxOutputTokens': 200,
+            'maxOutputTokens': 100,
+            // ⭐ [속도 개선 2] 제미나이를 완벽한 JSON 머신으로 만듭니다.
+            'responseMimeType': 'application/json',
           }
         },
       );
@@ -250,92 +330,65 @@ class YouTubeService {
       if (parts == null || parts.isEmpty) return null;
 
       final text = parts[0]['text']?.toString() ?? '';
-      debugPrint('[Gemini] 응답: $text');
+      debugPrint('[Gemini] 원본 응답: $text');
 
       return _parseGeminiSelection(text, candidates);
 
     } catch (e) {
-      debugPrint('[Gemini] 오류: $e');
+      debugPrint('[Gemini] API 오류: $e');
       return null;
     }
   }
 
-  /// Gemini 선택 프롬프트
   String _buildSelectionPrompt(String trackName, String artistName, List<YouTubeCandidate> candidates) {
     final candidatesList = candidates.asMap().entries.map((e) {
       final i = e.key + 1;
       final c = e.value;
-      return '$i. "${c.title}" - Channel: ${c.channelTitle} (${_formatViews(c.viewCount)} views)';
+      return '$i. "${c.title}" - Channel: ${c.channelTitle} (${_formatViews(c.viewCount)} views) [Score: ${c.score}]';
     }).join('\n');
 
     return '''
 You are selecting the best official music video for a song.
-
 Song: $trackName
 Artist: $artistName
 
-Here are the top YouTube search results (sorted by view count):
+Top candidates:
 $candidatesList
 
 Selection Priority:
-1. Official Music Video from artist's channel (look for: official, VEVO, 公式, MV, Music Video)
-2. If anime OST, anime studio's official MV is acceptable (TOHO animation, Aniplex, Sony Music, etc.)
-3. If no MV exists, official audio from Topic channel or record label is acceptable
-4. NEVER select: covers, reactions, fan-made content, live performances, remixes
+1. Official Music Video from artist's channel
+2. Official anime OST MV from studio
+3. Official audio from Topic channel or label
+4. NEVER select covers, lives, or fan-made.
 
-Return ONLY a JSON object (no markdown, no explanation):
+Return a JSON object with this EXACT format:
 {"number": 1, "type": "mv"}
 
-Where:
-- number: The candidate number (1-${candidates.length})
-- type: "mv" (music video) or "audio" (official audio only)
-
-If none are acceptable official content, return:
-{"number": null, "type": null}
+"number" is the chosen candidate (1-${candidates.length}). "type" is "mv" or "audio". If none are good, return {"number": null, "type": null}.
 ''';
   }
 
-  /// Gemini 응답 파싱
+  /// ⭐ [속도 개선 3] 정규식 파싱을 버리고 빠르고 정확한 JSON 디코딩 적용
   YouTubeMatchResult? _parseGeminiSelection(String text, List<YouTubeCandidate> candidates) {
     try {
-      String jsonStr = text.trim();
+      final Map<String, dynamic> jsonResponse = jsonDecode(text.trim());
 
-      // 마크다운 제거
-      if (jsonStr.contains('```')) {
-        final match = RegExp(r'\{[^}]+\}').firstMatch(jsonStr);
-        if (match != null) jsonStr = match.group(0)!;
-      }
+      final number = jsonResponse['number'];
+      final type = jsonResponse['type']?.toString() ?? 'mv';
 
-      // 불완전한 JSON 처리 - number만 추출
-      int? number;
-      String type = 'mv'; // 기본값
-
-      // number 추출 시도
-      final numberMatch = RegExp(r'"number"\s*:\s*(\d+)').firstMatch(jsonStr);
-      if (numberMatch != null) {
-        number = int.tryParse(numberMatch.group(1) ?? '');
-      }
-
-      // type 추출 시도
-      final typeMatch = RegExp(r'"type"\s*:\s*"(\w+)"').firstMatch(jsonStr);
-      if (typeMatch != null) {
-        type = typeMatch.group(1) ?? 'mv';
-      }
-
-      if (number == null) {
-        debugPrint('[Gemini] number 추출 실패');
+      if (number == null || number is! int) {
+        debugPrint('[Gemini] 적합한 영상 없음으로 판단됨 (number is null)');
         return null;
       }
 
       final index = number - 1;
       if (index < 0 || index >= candidates.length) {
-        debugPrint('[Gemini] 잘못된 index: $index');
+        debugPrint('[Gemini] 잘못된 index 반환: $index');
         return null;
       }
 
       final selected = candidates[index];
-
-      debugPrint('[Gemini] ✓ 선택: #$number ${selected.title} ($type)');
+      debugPrint('[Gemini] ✓ 최종 선택: #$number ${selected.title} ($type) [${selected.score}점]');
 
       return YouTubeMatchResult(
         videoId: selected.videoId,
@@ -344,19 +397,19 @@ If none are acceptable official content, return:
         type: type,
       );
     } catch (e) {
-      debugPrint('[Gemini] 파싱 오류: $e');
+      debugPrint('[Gemini] JSON 디코딩 오류: $e \n원문: $text');
       return null;
     }
   }
 }
 
-/// YouTube 검색 후보
 class YouTubeCandidate {
   final String videoId;
   final String title;
   final String channelTitle;
   final int viewCount;
   final int durationSec;
+  final int score;
 
   YouTubeCandidate({
     required this.videoId,
@@ -364,15 +417,15 @@ class YouTubeCandidate {
     required this.channelTitle,
     required this.viewCount,
     required this.durationSec,
+    required this.score,
   });
 }
 
-/// YouTube 매칭 결과
 class YouTubeMatchResult {
   final String videoId;
   final String title;
   final String channelName;
-  final String type; // 'mv', 'audio', 'fallback'
+  final String type;
 
   YouTubeMatchResult({
     required this.videoId,
@@ -385,7 +438,7 @@ class YouTubeMatchResult {
   bool get isOfficialAudio => type == 'audio';
   bool get isFallback => type == 'fallback';
 
-  String get youtubeUrl => 'https://www.youtube.com/watch?v=$videoId';
+  String get youtubeUrl => '[https://www.youtube.com/watch?v=$videoId](https://www.youtube.com/watch?v=$videoId)';
 
   @override
   String toString() => 'YouTubeMatchResult(videoId: $videoId, type: $type)';

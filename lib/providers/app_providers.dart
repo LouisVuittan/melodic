@@ -5,7 +5,7 @@ import '../core/services/video_cache_service.dart';
 import '../core/services/video_matcher_service.dart';
 import '../core/services/artist_image_service.dart';
 import '../core/services/caption_service.dart';
-
+import '../core/services/korea_chart_service.dart';
 /// iTunes 서비스 프로바이더 (API 키 불필요!)
 final iTunesServiceProvider = Provider<iTunesService>((ref) {
   return iTunesService();
@@ -17,9 +17,11 @@ final japanTopChartProvider = FutureProvider<List<iTunesTrack>>((ref) async {
   return service.getJapanTopChart(limit: 50);
 });
 
-/// 오늘의 추천곡 (1위 곡)
+
+
+/// 오늘의 추천곡 (1위 곡) — 한국 J-Pop 차트 기준
 final featuredTrackProvider = FutureProvider<iTunesTrack?>((ref) async {
-  final chart = await ref.watch(japanTopChartProvider.future);
+  final chart = await ref.watch(koreaJPopChartProvider.future);
   if (chart.isEmpty) return null;
   return chart.first; // 1위 곡
 });
@@ -87,8 +89,57 @@ final captionServiceProvider = Provider<CaptionService>((ref) {
   return CaptionService();
 });
 
-/// 비디오 ID로 자막 가져오기
+/// 기존 호환용 - 비디오 ID로 YouTube 자막만 가져오기
 final captionProvider = FutureProvider.family<List<LyricCaption>?, String>((ref, videoId) async {
   final service = ref.read(captionServiceProvider);
   return service.getCaptions(videoId);
+});
+
+/// 스마트 자막 요청 파라미터
+class SmartCaptionParams {
+  final String videoId;
+  final String artist;
+  final String title;
+
+  SmartCaptionParams({
+    required this.videoId,
+    required this.artist,
+    required this.title,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+          other is SmartCaptionParams &&
+              runtimeType == other.runtimeType &&
+              videoId == other.videoId &&
+              artist == other.artist &&
+              title == other.title;
+
+  @override
+  int get hashCode => videoId.hashCode ^ artist.hashCode ^ title.hashCode;
+}
+
+/// 스마트 자막 Provider
+/// YouTube 자막 있으면 → 바로 반환
+/// YouTube 자막 없으면 → Uta-Net + AI로 자동 생성
+final smartCaptionProvider = FutureProvider.family<CaptionResult?, SmartCaptionParams>((ref, params) async {
+  final service = ref.read(captionServiceProvider);
+  return service.getSmartCaptions(
+    videoId: params.videoId,
+    artist: params.artist,
+    title: params.title,
+  );
+});
+
+/// 한국 차트 스크래핑 서비스 프로바이더 추가
+final koreaChartServiceProvider = Provider<KoreaChartService>((ref) {
+  return KoreaChartService();
+});
+
+/// 🇰🇷 한국에서 인기있는 J-Pop 차트 프로바이더 (벅스 차트 기반으로 변경)
+final koreaJPopChartProvider = FutureProvider<List<iTunesTrack>>((ref) async {
+  final service = ref.watch(koreaChartServiceProvider);
+  // 벅스 차트에서 50위까지 가져오기
+  return service.getMelonJPopChart(limit: 50);
 });
